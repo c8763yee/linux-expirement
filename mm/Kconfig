@@ -1391,6 +1391,18 @@ config LRU_GEN_STATS
 
 	  This option has a per-memcg and per-node memory overhead.
 
+config LRU_GEN_SHIFT
+	bool "Decay stale history by generation lifetime"
+	depends on LRU_GEN
+	help
+	  Discount the moving averages of the page reclaim feedback loop by the
+	  lifetime of the generation being aged out, so that long-lived
+	  generations resist stale information and the loop reacts faster to a
+	  change in the workload.
+
+	  This adds a runtime knob at /sys/kernel/mm/lru_gen/shift, which is off
+	  by default and accepts only "y" or "n".
+
 config LRU_GEN_WALKS_MMU
 	def_bool y
 	depends on LRU_GEN && ARCH_HAS_HW_PTE_YOUNG

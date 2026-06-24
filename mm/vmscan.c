@@ -3118,6 +3118,21 @@ static bool iterate_mm_list_nowalk(struct lruvec *lruvec, unsigned long seq)
  * 1. The D term may discount the other two terms over time so that long-lived
  *    generations can resist stale information.
  */
+
+#ifdef CONFIG_LRU_GEN_SHIFT
+static DEFINE_STATIC_KEY_FALSE(lru_gen_shift_key);
+
+static bool lru_gen_shift_enabled(void)
+{
+	return static_branch_unlikely(&lru_gen_shift_key);
+}
+#else
+static bool lru_gen_shift_enabled(void)
+{
+	return false;
+}
+#endif
+
 struct ctrl_pos {
 	unsigned long refaulted;
 	unsigned long total;
@@ -3161,7 +3176,7 @@ static void reset_ctrl_pos(struct lruvec *lruvec, int type, bool carryover)
 	if (carryover) {
 		gen = lru_gen_from_seq(seq);
 		delta = jiffies - lrugen->timestamps[gen];
-		shift = ilog2(max(2UL, delta));
+		shift = lru_gen_shift_enabled() ? ilog2(max(2UL, delta)) : 1;
 	}
 
 	for (tier = 0; tier < MAX_NR_TIERS; tier++) {
@@ -5443,9 +5458,34 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 static struct kobj_attribute lru_gen_enabled_attr = __ATTR_RW(enabled);
 
+#ifdef CONFIG_LRU_GEN_SHIFT
+static ssize_t shift_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%c\n", lru_gen_shift_enabled() ? 'y' : 'n');
+}
+
+static ssize_t shift_store(struct kobject *kobj, struct kobj_attribute *attr,
+			   const char *buf, size_t len)
+{
+	if (tolower(*buf) == 'y')
+		static_branch_enable(&lru_gen_shift_key);
+	else if (tolower(*buf) == 'n')
+		static_branch_disable(&lru_gen_shift_key);
+	else
+		return -EINVAL;
+
+	return len;
+}
+
+static struct kobj_attribute lru_gen_shift_attr = __ATTR_RW(shift);
+#endif
+
 static struct attribute *lru_gen_attrs[] = {
 	&lru_gen_min_ttl_attr.attr,
 	&lru_gen_enabled_attr.attr,
+#ifdef CONFIG_LRU_GEN_SHIFT
+	&lru_gen_shift_attr.attr,
+#endif
 	NULL
 };
 
