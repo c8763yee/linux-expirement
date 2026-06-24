@@ -3146,6 +3146,7 @@ static void read_ctrl_pos(struct lruvec *lruvec, int type, int tier, int gain,
 static void reset_ctrl_pos(struct lruvec *lruvec, int type, bool carryover)
 {
 	int hist, tier;
+	unsigned long gen, delta, shift;
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
 	bool clear = carryover ? NR_HIST_GENS == 1 : NR_HIST_GENS > 1;
 	unsigned long seq = carryover ? lrugen->min_seq[type] : lrugen->max_seq + 1;
@@ -3157,18 +3158,26 @@ static void reset_ctrl_pos(struct lruvec *lruvec, int type, bool carryover)
 
 	hist = lru_hist_from_seq(seq);
 
+	if (carryover) {
+		gen = lru_gen_from_seq(seq);
+		delta = jiffies - lrugen->timestamps[gen];
+		shift = ilog2(max(2UL, delta));
+	}
+
 	for (tier = 0; tier < MAX_NR_TIERS; tier++) {
 		if (carryover) {
-			unsigned long sum;
+			unsigned long sum, sample;
 
-			sum = lrugen->avg_refaulted[type][tier] +
-			      atomic_long_read(&lrugen->refaulted[hist][type][tier]);
-			WRITE_ONCE(lrugen->avg_refaulted[type][tier], sum / 2);
+			sum = lrugen->avg_refaulted[type][tier];
+			sample = atomic_long_read(&lrugen->refaulted[hist][type][tier]);
+			WRITE_ONCE(lrugen->avg_refaulted[type][tier],
+				   sample + ((long)(sum - sample) >> shift));
 
-			sum = lrugen->avg_total[type][tier] +
-			      lrugen->protected[hist][type][tier] +
+			sum = lrugen->avg_total[type][tier];
+			sample = lrugen->protected[hist][type][tier] +
 			      atomic_long_read(&lrugen->evicted[hist][type][tier]);
-			WRITE_ONCE(lrugen->avg_total[type][tier], sum / 2);
+			WRITE_ONCE(lrugen->avg_total[type][tier],
+				   sample + ((long)(sum - sample) >> shift));
 		}
 
 		if (clear) {
