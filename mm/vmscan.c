@@ -3119,6 +3119,9 @@ static bool iterate_mm_list_nowalk(struct lruvec *lruvec, unsigned long seq)
  *    generations can resist stale information.
  */
 
+/* to protect the working set of the last N jiffies */
+static unsigned long lru_gen_min_ttl __read_mostly;
+
 #ifdef CONFIG_LRU_GEN_SHIFT
 static DEFINE_STATIC_KEY_FALSE(lru_gen_shift_key);
 
@@ -3126,10 +3129,30 @@ static bool lru_gen_shift_enabled(void)
 {
 	return static_branch_unlikely(&lru_gen_shift_key);
 }
-#else
-static bool lru_gen_shift_enabled(void)
+
+/*
+ * Decay the feedback loop's history once a generation outlives min_ttl, the
+ * user-declared working-set protection window. Inside the window the loop keeps
+ * the original 1:1 average (shift 1); past it the shift grows with how many
+ * doublings of min_ttl the generation has survived, so a longer-idle generation
+ * discounts more stale history -- without the raw ilog2(jiffies) saturating.
+ */
+static unsigned long lru_gen_decay_shift(unsigned long delta)
 {
-	return false;
+	unsigned long min_ttl = READ_ONCE(lru_gen_min_ttl);
+	unsigned long shift;
+
+	if (!lru_gen_shift_enabled() || !min_ttl || delta <= min_ttl)
+		return 1;
+
+	/* 1 + floor(log2(delta / min_ttl)) without the divide */
+	shift = ilog2(delta) - ilog2(min_ttl);
+	return shift + ((min_ttl << shift) <= delta);
+}
+#else
+static unsigned long lru_gen_decay_shift(unsigned long delta)
+{
+	return 1;
 }
 #endif
 
@@ -3176,7 +3199,7 @@ static void reset_ctrl_pos(struct lruvec *lruvec, int type, bool carryover)
 	if (carryover) {
 		gen = lru_gen_from_seq(seq);
 		delta = jiffies - lrugen->timestamps[gen];
-		shift = lru_gen_shift_enabled() ? ilog2(max(2UL, delta)) : 1;
+		shift = lru_gen_decay_shift(delta);
 	}
 
 	for (tier = 0; tier < MAX_NR_TIERS; tier++) {
@@ -4153,9 +4176,6 @@ static bool lruvec_is_reclaimable(struct lruvec *lruvec, struct scan_control *sc
 
 	return time_is_before_jiffies(birth + min_ttl);
 }
-
-/* to protect the working set of the last N jiffies */
-static unsigned long lru_gen_min_ttl __read_mostly;
 
 static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
 {
