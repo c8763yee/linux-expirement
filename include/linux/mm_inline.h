@@ -4,6 +4,7 @@
 
 #include <linux/atomic.h>
 #include <linux/huge_mm.h>
+#include <linux/log2.h>
 #include <linux/mm_types.h>
 #include <linux/swap.h>
 #include <linux/string.h>
@@ -127,6 +128,26 @@ static inline bool lru_gen_in_fault(void)
 static inline int lru_gen_from_seq(unsigned long seq)
 {
 	return seq % MAX_NR_GENS;
+}
+
+/*
+ * Decay shift for the page-reclaim feedback loop's history average. While a
+ * generation is younger than min_ttl it returns 1 (the original 1:1 average);
+ * past min_ttl the shift grows by one per doubling, so a longer-idle generation
+ * discounts more stale history. min_ttl == 0 disables the decay -- callers pass
+ * 0 when the shift knob is off.
+ */
+static inline unsigned long lru_gen_decay_shift(unsigned long delta,
+						unsigned long min_ttl)
+{
+	unsigned long shift;
+
+	if (!min_ttl || delta <= min_ttl)
+		return 1;
+
+	/* 1 + floor(log2(delta / min_ttl)) without the divide */
+	shift = ilog2(delta) - ilog2(min_ttl);
+	return shift + ((min_ttl << shift) <= delta);
 }
 
 static inline int lru_hist_from_seq(unsigned long seq)

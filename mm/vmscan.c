@@ -3129,31 +3129,6 @@ static bool lru_gen_shift_enabled(void)
 {
 	return static_branch_unlikely(&lru_gen_shift_key);
 }
-
-/*
- * Decay the feedback loop's history once a generation outlives min_ttl, the
- * user-declared working-set protection window. Inside the window the loop keeps
- * the original 1:1 average (shift 1); past it the shift grows with how many
- * doublings of min_ttl the generation has survived, so a longer-idle generation
- * discounts more stale history -- without the raw ilog2(jiffies) saturating.
- */
-static unsigned long lru_gen_decay_shift(unsigned long delta)
-{
-	unsigned long min_ttl = READ_ONCE(lru_gen_min_ttl);
-	unsigned long shift;
-
-	if (!lru_gen_shift_enabled() || !min_ttl || delta <= min_ttl)
-		return 1;
-
-	/* 1 + floor(log2(delta / min_ttl)) without the divide */
-	shift = ilog2(delta) - ilog2(min_ttl);
-	return shift + ((min_ttl << shift) <= delta);
-}
-#else
-static unsigned long lru_gen_decay_shift(unsigned long delta)
-{
-	return 1;
-}
 #endif
 
 struct ctrl_pos {
@@ -3197,9 +3172,15 @@ static void reset_ctrl_pos(struct lruvec *lruvec, int type, bool carryover)
 	hist = lru_hist_from_seq(seq);
 
 	if (carryover) {
+		unsigned long min_ttl = 0;
+
 		gen = lru_gen_from_seq(seq);
 		delta = jiffies - lrugen->timestamps[gen];
-		shift = lru_gen_decay_shift(delta);
+#ifdef CONFIG_LRU_GEN_SHIFT
+		if (lru_gen_shift_enabled())
+			min_ttl = READ_ONCE(lru_gen_min_ttl);
+#endif
+		shift = lru_gen_decay_shift(delta, min_ttl);
 	}
 
 	for (tier = 0; tier < MAX_NR_TIERS; tier++) {
